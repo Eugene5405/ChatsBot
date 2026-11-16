@@ -10,12 +10,16 @@ from aiogram.types import CallbackQuery, ChatJoinRequest, ChatMemberUpdated, Inl
 import config
 import rules
 from loader import bot
-from utils import mention
 
 router = Router()
 
 _ACTIVE = {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR}
 _LEFT = {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}
+
+
+def _mention(user) -> str:
+    name = html.escape(user.full_name or user.first_name or "Участник")
+    return f'<a href="tg://user?id={user.id}">{name}</a>'
 
 
 async def _is_subscribed(user_id: int) -> bool:
@@ -35,7 +39,7 @@ async def _channel_url() -> str | None:
     if not config.CHANNEL_ID:
         return None
     chat = await bot.get_chat(config.CHANNEL_ID)
-    return f"https://t.me/{chat.username}" if chat.username else chat.invite_link
+    return f"https://t.me{chat.username}" if chat.username else chat.invite_link
 
 
 def _ask_sub_kb(chat_id: int, url: str | None) -> InlineKeyboardMarkup:
@@ -49,7 +53,7 @@ def _ask_sub_kb(chat_id: int, url: str | None) -> InlineKeyboardMarkup:
 async def _send_welcome(chat_id: int, chat_title: str, user):
     title = html.escape(chat_title or config.CHAT_TITLE)
     text = (
-        f"👋 Добро пожаловать в <b>{title}</b>, {mention(user)}!\n\n"
+        f"👋 Добро пожаловать в <b>{title}</b>, {_mention(user)}!\n\n"
         f"Ознакомься с правилами, чтобы не словить мут или бан:\n"
         f"<blockquote expandable>{rules.get_rules(chat_id)}</blockquote>"
     )
@@ -102,5 +106,5 @@ async def on_chat_member_update(event: ChatMemberUpdated):
     elif old_status in _ACTIVE and new_status == ChatMemberStatus.LEFT:
         await bot.send_message(
             event.chat.id,
-            f"👋 {mention(user)} покинул(а) чат. Удачи и всего хорошего!",
+            f"👋 {_mention(user)} покинул(а) чат. Удачи и всего хорошего!",
         )
