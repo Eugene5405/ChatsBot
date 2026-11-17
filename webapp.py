@@ -66,5 +66,5 @@ async def index(request: web.Request) -> web.Response:
 
 
 def setup_routes(app: web.Application) -> None:
-    app.router.add_get("/", index)
+    app.router.add_get("/webapp", index)
     app.router.add_get("/health", health)
