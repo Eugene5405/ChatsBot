@@ -1,4 +1,4 @@
-"""Умный антимат-фильтр (совместим со всеми старыми и новыми модулями)."""
+"""Умный антимат-фильтр: ловит мат в предложениях, с латиницей и маскировкой."""
 import re
 
 _HOMOGLYPHS = str.maketrans({
@@ -43,35 +43,29 @@ def _normalize(text: str) -> str:
     return text
 
 
-def contains_profanity(text: str | None) -> bool:
+def has_bad_word(text: str | None) -> bool:
+    """Возвращает True, если в любой части текста найден мат."""
     if not text:
         return False
+
     normalized = _normalize(text)
     words = re.findall(r"[а-я]+", normalized)
+
     for word in words:
         if word in _WHITELIST:
             continue
         for pattern in _COMPILED_PATTERNS:
             if pattern.search(word):
                 return True
+
     for pattern in _COMPILED_PATTERNS:
         if pattern.search(normalized):
             if not any(w in normalized for w in _WHITELIST):
                 return True
+
     return False
 
 
-# Алиасы на случай, если automod.py вызывает другое имя функции
-def has_profanity(text: str | None) -> bool:
-    return contains_profanity(text)
-
-
-def check_profanity(text: str | None) -> bool:
-    return contains_profanity(text)
-
-
-def is_profane(text: str | None) -> bool:
-    return contains_profanity(text)
-    has_bad_word = contains_profanity
-has_profanity = contains_profanity
-check_profanity = contains_profanity
+contains_profanity = has_bad_word
+has_profanity = has_bad_word
+check_profanity = has_bad_word
