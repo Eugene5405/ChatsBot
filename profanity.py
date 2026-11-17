@@ -72,3 +72,6 @@ def check_profanity(text: str | None) -> bool:
 
 def is_profane(text: str | None) -> bool:
     return contains_profanity(text)
+    has_bad_word = contains_profanity
+has_profanity = contains_profanity
+check_profanity = contains_profanity
