@@ -1,4 +1,3 @@
-"""Единая точка запуска бота и веб-приложения (Render + Neon + aiogram 3)."""
 import asyncio
 import inspect
 import logging
@@ -6,17 +5,20 @@ import os
 
 from aiohttp import web
 from aiogram import BaseMiddleware, Dispatcher
-from aiogram.enums import ChatType
 from aiogram.types import Message
 
 import admin
 import automod
 import chat_lock
 import db
+import economy_shop
 import info
 import moderation
 import pm_panel
 import report
+import reputation
+import roulette
+import rp
 import webapp
 import welcome
 from loader import bot
@@ -25,10 +27,10 @@ logging.basicConfig(level=logging.INFO)
 
 
 class AutoRegisterChatMiddleware(BaseMiddleware):
-    """Автоматически регистрирует группу в базе Neon при любом сообщении или команде."""
+    """Автоматически регистрирует группу в базе Neon при любом сообщении."""
 
     async def __call__(self, handler, event, data):
-        if isinstance(event, Message) and event.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if isinstance(event, Message) and event.chat.type in ("group", "supergroup"):
             try:
                 db.register_chat(event.chat.id, event.chat.title)
             except Exception as e:
@@ -62,10 +64,14 @@ async def main():
     dp = Dispatcher()
     dp.message.outer_middleware(AutoRegisterChatMiddleware())
 
-    # Порядок подключения всех модулей
+    # Подключаем все модули бота
     dp.include_router(pm_panel.router)
     dp.include_router(chat_lock.router)
     dp.include_router(report.router)
+    dp.include_router(economy_shop.router)
+    dp.include_router(reputation.router)
+    dp.include_router(roulette.router)
+    dp.include_router(rp.router)
     dp.include_router(admin.router)
     dp.include_router(moderation.router)
     dp.include_router(info.router)
@@ -74,7 +80,17 @@ async def main():
 
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    await dp.start_polling(
+        bot,
+        allowed_updates=[
+            "message",
+            "edited_message",
+            "callback_query",
+            "chat_member",
+            "my_chat_member",
+            "chat_join_request",
+        ],
+    )
 
 
 if __name__ == "__main__":
