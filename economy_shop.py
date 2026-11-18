@@ -131,7 +131,7 @@ async def cmd_give(message: Message):
     await message.reply(
         f"💸 {_mention(message.from_user)} передал(а) <b>{amount} Алиби</b> участнику {_mention(target)}!"
 )
-  @router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}), Command("shop"))
+@router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}), Command("shop"))
 @router.message(
     F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}),
     F.text.func(lambda t: t is not None and t.strip().lower() == "магазин"),
