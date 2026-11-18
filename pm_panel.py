@@ -1,4 +1,4 @@
-"""Личный кабинет, нижнее меню кнопок, список чатов и кнопка админ-панели."""
+"""Меню в личных сообщениях с ботом, нижняя клавиатура и открытие админ-панели."""
 import html
 import os
 
@@ -17,14 +17,15 @@ from aiogram.types import (
 import db
 
 router = Router()
+router.message.filter(F.chat.type == ChatType.PRIVATE)
 
 
 def _get_webapp_url() -> str:
-    base = os.getenv("RENDER_EXTERNAL_URL", "https://chatsbot-ve5e.onrender.com").rstrip("/")
+    base = os.getenv("RENDER_EXTERNAL_URL", "https://onrender.com").rstrip("/")
     return f"{base}/webapp"
 
 
-def _main_reply_kb() -> ReplyKeyboardMarkup:
+def _bottom_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
@@ -37,10 +38,11 @@ def _main_reply_kb() -> ReplyKeyboardMarkup:
             ],
         ],
         resize_keyboard=True,
+        is_persistent=True,
     )
 
 
-def _inline_panel_kb() -> InlineKeyboardMarkup:
+def _inline_start_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -52,74 +54,88 @@ def _inline_panel_kb() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="➕ Добавить бота в группу",
-                    url="https://t.me/chat_custodian_bot?startgroup=true&admin=change_info+delete_messages+restrict_members+invite_users+pin_messages",
+                    url="https://t.me",
                 )
             ],
         ]
     )
 
 
-@router.message(F.chat.type == ChatType.PRIVATE, CommandStart())
+@router.message(CommandStart())
 async def cmd_start_pm(message: Message):
     await message.answer(
         "👋 Привет! Я <b>Хранитель чата</b>.\n\n"
-        "Я защищаю группы от мата, спама и рекламы, проверяю подписку на канал при входе "
-        "и помогаю управлять порядком.\n\n"
-        "Используйте кнопки меню внизу или откройте <b>админ-панель</b>:",
-        reply_markup=_main_reply_kb(),
+        "Я защищаю группы от мата, спама и рекламы, управляю репортами, репутацией, экономикой «Алиби», магазином и ролеплеем.\n\n"
+        "1. Нажми <b>«➕ Добавить бота в группу»</b> и выдай права администратора.\n"
+        "2. Напиши в группе <code>/status</code> для проверки прав.\n"
+        "3. Управляй всеми чатами через <b>админ-панель</b>:",
+        reply_markup=_inline_start_kb(),
     )
-    await message.answer("Быстрый доступ к панели управления:", reply_markup=_inline_panel_kb())
+    await message.answer("⌨️ Быстрое меню управления активировано:", reply_markup=_bottom_menu())
 
 
-@router.message(F.chat.type == ChatType.PRIVATE, Command("help"))
-@router.message(F.chat.type == ChatType.PRIVATE, F.text.lower().contains("помощ"))
+@router.message(Command("help"))
+@router.message(F.text.func(lambda t: t is not None and "помощ" in t.lower()))
 async def cmd_help_pm(message: Message):
     await message.answer(
-        "📖 <b>Справка по работе с ботом</b>\n\n"
-        "<b>1. Подключение чата:</b>\n"
-        "• Нажмите <b>«➕ Добавить в чат»</b> и выберите нужную группу.\n"
-        "• Выдайте боту права администратора (удаление, блокировка, закрепление).\n"
-        "• Напишите в группе <code>/status</code> для синхронизации.\n\n"
-        "<b>2. Команды в группе (для админов):</b>\n"
-        "• <code>-чат</code> — закрыть чат (писать могут только админы)\n"
-        "• <code>+чат</code> — открыть чат для всех участников\n"
-        "• <code>/status</code> — проверить права бота\n"
-        "• <code>/settings</code> — настройки фильтров\n"
-        "• <code>/warn</code>, <code>/mute</code>, <code>/ban</code> — модерация нарушителей",
-        reply_markup=_main_reply_kb(),
+        "❓ <b>Справка по Хранителю чата</b>\n\n"
+        "<b>Команды для участников:</b>\n"
+        "• <code>репорт причина</code> (ответом) — жалоба админам в ЛС со ссылкой\n"
+        "• <code>мешок</code> / <code>/bag</code> — баланс «Алиби» и инвентарь\n"
+        "• <code>дать 50</code> / <code>/give 50</code> — перевести «Алиби»\n"
+        "• <code>магазин</code> / <code>/shop</code> — магазин на 13 товаров\n"
+        "• <code>+реп</code> / <code>/lookrep</code> — репутация\n"
+        "• <code>русская рулетка</code> — игра на удачу\n"
+        "• <code>обнять</code>, <code>дать леща</code>, <code>поцеловать</code> — РП-действия\n\n"
+        "<b>Команды для админов:</b>\n"
+        "• <code>-чат</code> / <code>+чат</code> — закрыть / открыть чат для участников\n"
+        "• <code>варн</code>, <code>мут</code>, <code>бан</code>, <code>кик</code> — модерация (ответом или по <code>@username</code>)\n"
+        "• <code>/settings</code>, <code>/status</code>, <code>/setrules</code>, <code>/newrp</code>, <code>/change</code>",
+        reply_markup=_bottom_menu(),
     )
 
 
-@router.message(F.chat.type == ChatType.PRIVATE, F.text.lower().contains("добавить"))
+@router.message(F.text.func(lambda t: t is not None and "добавить" in t.lower()))
 async def btn_add_chat(message: Message):
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➕ Выбрать группу для добавления",
+                    url="https://t.me",
+                )
+            ]
+        ]
+    )
     await message.answer(
-        "Нажмите на кнопку ниже, чтобы выбрать группу и добавить туда бота администратором:",
-        reply_markup=_inline_panel_kb(),
+        "Нажми кнопку ниже, выбери свою группу и подтверди права администратора:",
+        reply_markup=kb,
     )
 
 
-@router.message(F.chat.type == ChatType.PRIVATE, F.text.lower().contains("чат"))
+@router.message(F.text.func(lambda t: t is not None and "чат" in t.lower()))
 async def btn_my_chats(message: Message):
-    chats = []
-    if hasattr(db, "get_all_chats"):
-        try:
-            chats = await db.get_all_chats()
-        except Exception:
-            chats = []
-
+    chats = db.get_chats()
     if not chats:
         await message.answer(
-            "📭 <b>Список подключённых чатов пока пуст.</b>\n\n"
-            "Добавьте бота в любую группу (или напишите в уже подключённой группе <code>/status</code>) — "
-            "чат сразу появится здесь и в админ-панели!",
-            reply_markup=_inline_panel_kb(),
+            "📭 Подключённых чатов пока нет.\n"
+            "Добавь бота в группу и напиши там любое сообщение или <code>/status</code>.",
+            reply_markup=_bottom_menu(),
         )
         return
 
-    lines = ["📋 <b>Ваши подключённые чаты:</b>\n"]
-    for c in chats:
-        title = html.escape(str(c.get("title") or "Без названия"))
-        cid = c.get("chat_id")
-        lines.append(f"• <b>{title}</b> (<code>{cid}</code>)")
+    lines = ["📋 <b>Подключённые чаты:</b>\n"]
+    for idx, ch in enumerate(chats, start=1):
+        lines.append(f"{idx}. <b>{html.escape(ch['title'])}</b> (<code>{ch['chat_id']}</code>)")
 
-    await message.answer("\n".join(lines), reply_markup=_inline_panel_kb())
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🛡 Управлять в админ-панели",
+                    web_app=WebAppInfo(url=_get_webapp_url()),
+                )
+            ]
+        ]
+    )
+    await message.answer("\n".join(lines), reply_markup=kb)
