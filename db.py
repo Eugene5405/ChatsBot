@@ -1,4 +1,5 @@
-"""Работа с PostgreSQL (Neon): единая база для админ-панели, модерации и настроек."""
+"""Работа с PostgreSQL (Neon): чаты, настройки, варны (30 дн.), экономика, репутация и РП."""
+import json
 import os
 import psycopg
 
@@ -25,29 +26,62 @@ def init_db() -> None:
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         """)
+        for col_sql in (
+            "ALTER TABLE chats ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT 'Чат';",
+            "ALTER TABLE chats ADD COLUMN IF NOT EXISTS profanity BOOLEAN NOT NULL DEFAULT TRUE;",
+            "ALTER TABLE chats ADD COLUMN IF NOT EXISTS antispam BOOLEAN NOT NULL DEFAULT TRUE;",
+            "ALTER TABLE chats ADD COLUMN IF NOT EXISTS antilink BOOLEAN NOT NULL DEFAULT TRUE;",
+            "ALTER TABLE chats ADD COLUMN IF NOT EXISTS subcheck BOOLEAN NOT NULL DEFAULT TRUE;",
+            "ALTER TABLE chats ADD COLUMN IF NOT EXISTS welcome BOOLEAN NOT NULL DEFAULT TRUE;",
+            "ALTER TABLE chats ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();",
+        ):
+            cur.execute(col_sql)
+
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS warns (
-                chat_id BIGINT NOT NULL,
-                user_id BIGINT NOT NULL,
-                count INT NOT NULL DEFAULT 0,
-                bans INT NOT NULL DEFAULT 0,
-                last_reason TEXT,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (chat_id, user_id)
-            );
-        """)
-        cur.execute("""
-            ALTER TABLE warns ADD COLUMN IF NOT EXISTS bans INT NOT NULL DEFAULT 0;
-        """)
-        cur.execute("""
-            ALTER TABLE warns ADD COLUMN IF NOT EXISTS last_reason TEXT;
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS chat_kv (
+            CREATE TABLE IF NOT EXISTS settings (
                 chat_id BIGINT NOT NULL,
                 key TEXT NOT NULL,
                 value TEXT,
                 PRIMARY KEY (chat_id, key)
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS warns (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                reason TEXT,
+                admin_id BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS warn_bans (
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                bans INT NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_id, user_id)
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_stats (
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                balance BIGINT NOT NULL DEFAULT 0,
+                reputation INT NOT NULL DEFAULT 0,
+                vip_until TIMESTAMPTZ,
+                prefix TEXT,
+                partner_id BIGINT,
+                inventory JSONB NOT NULL DEFAULT '{}'::jsonb,
+                PRIMARY KEY (chat_id, user_id)
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS custom_rp (
+                chat_id BIGINT NOT NULL,
+                trigger TEXT NOT NULL,
+                template TEXT NOT NULL,
+                PRIMARY KEY (chat_id, trigger)
             );
         """)
 
@@ -58,8 +92,8 @@ def register_chat(chat_id: int, title: str | None) -> None:
     safe_title = (title or "Чат").strip() or "Чат"
     with _conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO chats (chat_id, title)
-            VALUES (%s, %s)
+            INSERT INTO chats (chat_id, title, updated_at)
+            VALUES (%s, %s, NOW())
             ON CONFLICT (chat_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 updated_at = NOW();
@@ -88,7 +122,6 @@ def get_chat_settings(chat_id: int) -> dict:
         "antilink": True,
         "subcheck": True,
         "welcome": True,
-        "rules": get_setting(chat_id, "rules") or "",
     }
     if not DATABASE_URL:
         return default
@@ -98,15 +131,15 @@ def get_chat_settings(chat_id: int) -> dict:
             FROM chats WHERE chat_id = %s;
         """, (chat_id,))
         row = cur.fetchone()
-        if row:
-            default.update({
-                "profanity": bool(row[0]),
-                "antispam": bool(row[1]),
-                "antilink": bool(row[2]),
-                "subcheck": bool(row[3]),
-                "welcome": bool(row[4]),
-            })
-        return default
+        if not row:
+            return default
+        return {
+            "profanity": bool(row[0]),
+            "antispam": bool(row[1]),
+            "antilink": bool(row[2]),
+            "subcheck": bool(row[3]),
+            "welcome": bool(row[4]),
+        }
 
 
 def update_chat_settings(chat_id: int, data: dict) -> None:
@@ -114,8 +147,8 @@ def update_chat_settings(chat_id: int, data: dict) -> None:
         return
     with _conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO chats (chat_id, profanity, antispam, antilink, subcheck, welcome)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO chats (chat_id, profanity, antispam, antilink, subcheck, welcome, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (chat_id) DO UPDATE SET
                 profanity = EXCLUDED.profanity,
                 antispam = EXCLUDED.antispam,
@@ -131,127 +164,41 @@ def update_chat_settings(chat_id: int, data: dict) -> None:
             bool(data.get("subcheck", True)),
             bool(data.get("welcome", True)),
         ))
-    if "rules" in data and data["rules"] is not None:
-        raw_rules = str(data["rules"]).strip()
-        if raw_rules:
-            if "<blockquote" not in raw_rules:
-                raw_rules = f"<blockquote expandable>{raw_rules}</blockquote>"
-            set_setting(chat_id, "rules", raw_rules)
+
+
+def filter_on(chat_id: int, kind: str) -> bool:
+    settings = get_chat_settings(chat_id)
+    if kind in settings:
+        return settings[kind]
+    val = get_setting(chat_id, "f_" + kind)
+    return val != "0"
+
+
+def set_setting(chat_id: int, key: str, value: str | None) -> None:
+    if not DATABASE_URL:
+        return
+    if key.startswith("f_"):
+        kind = key[2:]
+        cur_settings = get_chat_settings(chat_id)
+        if kind in cur_settings:
+            cur_settings[kind] = value != "0"
+            update_chat_settings(chat_id, cur_settings)
+            return
+    with _conn() as conn, conn.cursor() as cur:
+        if value is None:
+            cur.execute("DELETE FROM settings WHERE chat_id = %s AND key = %s;", (chat_id, key))
         else:
-            set_setting(chat_id, "rules", None)
-
-
-# --- Совместимость со старыми модулями (admin.py, moderation.py, automod.py, info.py) ---
-
-_KIND_TO_COL = {
-    "profanity": "profanity",
-    "badwords": "profanity",
-    "mat": "profanity",
-    "spam": "antispam",
-    "antispam": "antispam",
-    "flood": "antispam",
-    "links": "antilink",
-    "antilink": "antilink",
-    "ads": "antilink",
-    "sub": "subcheck",
-    "subcheck": "subcheck",
-    "welcome": "welcome",
-}
+            cur.execute("""
+                INSERT INTO settings (chat_id, key, value)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (chat_id, key) DO UPDATE SET value = EXCLUDED.value;
+            """, (chat_id, key, value))
 
 
 def get_setting(chat_id: int, key: str) -> str | None:
     if not DATABASE_URL:
         return None
     with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT value FROM chat_kv WHERE chat_id = %s AND key = %s;", (chat_id, key))
+        cur.execute("SELECT value FROM settings WHERE chat_id = %s AND key = %s;", (chat_id, key))
         row = cur.fetchone()
         return row[0] if row else None
-
-
-def set_setting(chat_id: int, key: str, value: str | None) -> None:
-    if not DATABASE_URL:
-        return
-    with _conn() as conn, conn.cursor() as cur:
-        if value is None:
-            cur.execute("DELETE FROM chat_kv WHERE chat_id = %s AND key = %s;", (chat_id, key))
-        else:
-            cur.execute("""
-                INSERT INTO chat_kv (chat_id, key, value)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (chat_id, key) DO UPDATE SET value = EXCLUDED.value;
-            """, (chat_id, key, str(value)))
-
-    if key.startswith("f_"):
-        kind = key[2:]
-        col = _KIND_TO_COL.get(kind)
-        if col:
-            flag = str(value) in ("1", "true", "True")
-            with _conn() as conn, conn.cursor() as cur:
-                cur.execute(f"""
-                    INSERT INTO chats (chat_id, {col})
-                    VALUES (%s, %s)
-                    ON CONFLICT (chat_id) DO UPDATE SET {col} = EXCLUDED.{col}, updated_at = NOW();
-                """, (chat_id, flag))
-
-
-def filter_on(chat_id: int, kind: str) -> bool:
-    col = _KIND_TO_COL.get(kind)
-    if col and DATABASE_URL:
-        with _conn() as conn, conn.cursor() as cur:
-            cur.execute(f"SELECT {col} FROM chats WHERE chat_id = %s;", (chat_id,))
-            row = cur.fetchone()
-            if row is not None:
-                return bool(row[0])
-    val = get_setting(chat_id, "f_" + kind)
-    if val is not None:
-        return val == "1"
-    return True
-
-
-def add_warn(chat_id: int, user_id: int, reason: str = "", admin_id: int = 0) -> tuple[int, int]:
-    if not DATABASE_URL:
-        return 1, 0
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT count, bans FROM warns WHERE chat_id = %s AND user_id = %s;", (chat_id, user_id))
-        row = cur.fetchone()
-        count = (row[0] if row else 0) + 1
-        bans = row[1] if row else 0
-        if count >= 3:
-            count = 0
-            bans += 1
-        cur.execute("""
-            INSERT INTO warns (chat_id, user_id, count, bans, last_reason, updated_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (chat_id, user_id) DO UPDATE SET
-                count = EXCLUDED.count,
-                bans = EXCLUDED.bans,
-                last_reason = EXCLUDED.last_reason,
-                updated_at = NOW();
-        """, (chat_id, user_id, count, bans, reason))
-        return count, bans
-
-
-def remove_last_warn(chat_id: int, user_id: int) -> int:
-    if not DATABASE_URL:
-        return 0
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT count FROM warns WHERE chat_id = %s AND user_id = %s;", (chat_id, user_id))
-        row = cur.fetchone()
-        count = max(0, (row[0] if row else 0) - 1)
-        cur.execute("""
-            INSERT INTO warns (chat_id, user_id, count, updated_at)
-            VALUES (%s, %s, %s, NOW())
-            ON CONFLICT (chat_id, user_id) DO UPDATE SET
-                count = EXCLUDED.count,
-                updated_at = NOW();
-        """, (chat_id, user_id, count))
-        return count
-
-
-def get_warns(chat_id: int, user_id: int) -> tuple[int, int]:
-    if not DATABASE_URL:
-        return 0, 0
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT count, bans FROM warns WHERE chat_id = %s AND user_id = %s;", (chat_id, user_id))
-        row = cur.fetchone()
-        return (row[0], row[1]) if row else (0, 0)
