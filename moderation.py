@@ -105,7 +105,7 @@ async def _resolve_target(msg: Message, arg: str):
             return None, arg
 
     return None, arg
-    @router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}), F.text)
+@router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}), F.text)
 async def handle_mod_commands(msg: Message):
     raw = (msg.text or "").strip()
     if not raw or not msg.from_user:
