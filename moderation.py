@@ -1,4 +1,4 @@
-"""Команды модерации в группе: бан/анбан, мут/анмут, варн/анварн, кик (со слэшем и словами ответом)."""
+"""Модерация в группе: бан/анбан, мут/анмут, варн/анварн, кик (ответом и по @username, с учётом щитов из магазина)."""
 import html
 import re
 from datetime import datetime, timedelta, timezone
@@ -84,23 +84,42 @@ async def _log_action(text: str):
             pass
 
 
-@router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}), F.text)
+async def _resolve_target(msg: Message, arg: str):
+    """Определяет цель: из reply_to_message или по @username / ID в аргументах."""
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        return msg.reply_to_message.from_user, arg
+
+    tokens = arg.split()
+    if not tokens:
+        return None, arg
+
+    first = tokens[0]
+    rest = " ".join(tokens[1:]).strip()
+
+    if first.startswith("@") or first.isdigit():
+        try:
+            chat_obj = await bot.get_chat(first if first.startswith("@") else int(first))
+            member = await bot.get_chat_member(msg.chat.id, chat_obj.id)
+            return member.user, rest
+        except Exception:
+            return None, arg
+
+    return None, arg
+    @router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}), F.text)
 async def handle_mod_commands(msg: Message):
     raw = (msg.text or "").strip()
-    if not raw:
+    if not raw or not msg.from_user:
         return
 
     lines = raw.splitlines()
     first_line = lines[0].strip()
     reason = "\n".join(lines[1:]).strip()
 
-    # Убираем ведущий слэш и возможное @bot_username
     cmd_line = first_line[1:] if first_line.startswith("/") else first_line
     parts = cmd_line.split(maxsplit=1)
     cmd = parts[0].split("@")[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
 
-    # Поддерживаемые команды (русские и английские, включая анмут / анварн / анбан)
     warn_cmds = {"warn", "варн", "пред"}
     unwarn_cmds = {"unwarn", "анварн", "снятьпред", "снять_пред"}
     mute_cmds = {"mute", "мут"}
@@ -109,7 +128,6 @@ async def handle_mod_commands(msg: Message):
     unban_cmds = {"unban", "анбан", "разбан"}
     kick_cmds = {"kick", "кик"}
 
-    # Специальный случай: "снять пред" из двух слов
     if cmd == "снять" and arg.lower().startswith("пред"):
         cmd = "снятьпред"
         arg = arg[4:].strip()
@@ -118,8 +136,9 @@ async def handle_mod_commands(msg: Message):
     if cmd not in all_cmds:
         return
 
-    # Для текстовых команд без слэша требуем обязательный ответ (reply) на сообщение нарушителя
-    if not first_line.startswith("/") and not msg.reply_to_message:
+    target, remaining_arg = await _resolve_target(msg, arg)
+
+    if not first_line.startswith("/") and not target:
         return
 
     if not await _is_admin(msg.chat.id, msg.from_user.id):
@@ -127,11 +146,10 @@ async def handle_mod_commands(msg: Message):
             await msg.reply("⛔ Эта команда доступна только администраторам чата.")
         return
 
-    if not msg.reply_to_message or not msg.reply_to_message.from_user:
-        await msg.reply("↩️ Используй эту команду <b>ответом на сообщение</b> участника.")
+    if not target:
+        await msg.reply("↩️ Используй команду <b>ответом на сообщение</b> или укажи <code>@username</code>.")
         return
 
-    target = msg.reply_to_message.from_user
     if target.id == msg.from_user.id:
         await msg.reply("Нельзя применить эту команду к самому себе.")
         return
@@ -149,7 +167,10 @@ async def handle_mod_commands(msg: Message):
     try:
         # ---------- ВАРН / ПРЕД ----------
         if cmd in warn_cmds:
-            final_reason = reason or arg or "Нарушение правил"
+            if db.consume_item(msg.chat.id, target.id, "shield_warn"):
+                await msg.reply(f"🛡 У {_mention(target)} сработал <b>Щит от преда</b>! Предупреждение заблокировано.")
+                return
+            final_reason = reason or remaining_arg or "Нарушение правил"
             count, bans = db.add_warn(msg.chat.id, target.id, final_reason, msg.from_user.id)
             if count == 0:
                 if bans == 1:
@@ -176,7 +197,15 @@ async def handle_mod_commands(msg: Message):
 
         # ---------- МУТ ----------
         elif cmd in mute_cmds:
-            td = _parse_duration(arg) if arg else timedelta(hours=1)
+            if db.consume_item(msg.chat.id, target.id, "shield_mute"):
+                await msg.reply(f"🛡 У {_mention(target)} сработал <b>Щит от мута</b>! Мут отменён.")
+                return
+            arg_parts = remaining_arg.split(maxsplit=1)
+            dur_str = arg_parts[0] if arg_parts else ""
+            inline_reason = arg_parts[1] if len(arg_parts) > 1 else ""
+            if inline_reason and not reason:
+                reason_text = f"\n📝 Причина: <i>{html.escape(inline_reason)}</i>"
+            td = _parse_duration(dur_str) if dur_str else timedelta(hours=1)
             until = datetime.now(timezone.utc) + td
             await bot.restrict_chat_member(msg.chat.id, target.id, permissions=_MUTE_PERMS, until_date=until)
             out = f"🔇 {_mention(target)} получил мут на <b>{_fmt_duration(td)}</b>.{reason_text}"
@@ -192,6 +221,9 @@ async def handle_mod_commands(msg: Message):
 
         # ---------- БАН ----------
         elif cmd in ban_cmds:
+            if db.consume_item(msg.chat.id, target.id, "shield_ban"):
+                await msg.reply(f"🛡 У {_mention(target)} сработал <b>Щит от бана</b>! Блокировка отменена.")
+                return
             await bot.ban_chat_member(msg.chat.id, target.id)
             out = f"⛔ {_mention(target)} забанен.{reason_text}"
             await msg.reply(out)
