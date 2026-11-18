@@ -1,4 +1,4 @@
-"""Система репортов (как в Ирисе): жалоба ответом на сообщение + кнопки действий для админов."""
+"""Система репортов (как в Ирисе): жалоба ответом на сообщение + уведомление админам в ЛС со ссылкой."""
 import html
 import logging
 from datetime import datetime, timedelta, timezone
@@ -46,7 +46,7 @@ async def on_report(message: Message):
         return
 
     if not message.reply_to_message or not message.reply_to_message.from_user:
-        await message.reply("ℹ️ Чтобы пожаловаться, ответьте на сообщение нарушителя: <code>репорт причина</code>")
+        await message.reply("ℹ️ Чтобы отправить жалобу, ответьте на сообщение нарушителя: <code>репорт причина</code>")
         return
 
     target = message.reply_to_message.from_user
@@ -61,27 +61,35 @@ async def on_report(message: Message):
         return
 
     parts = message.text.strip().split(maxsplit=1)
-    reason = html.escape(parts[1]) if len(parts) > 1 else "Не указана"
+    reason = html.escape(parts[1].strip()) if len(parts) > 1 else "Не указана"
 
     # 1. Публикуем уведомление в чате
     await message.answer(
-        f"🚨 <b>Жалоба отправлена администраторам!</b>\n"
-        f"👤 От: {_mention(reporter)}\n"
-        f"🎯 На: {_mention(target)}\n"
+        f"🚨 <b>Репорт отправлен администраторам!</b>
+"
+        f"👤 От: {_mention(reporter)}
+"
+        f"🎯 На: {_mention(target)}
+"
         f"📝 Причина: <i>{reason}</i>"
     )
 
-    # 2. Собираем карточку жалобы для ЛС администраторов
+    # 2. Отправляем карточку жалобы в ЛС всем админам со ссылкой на сообщение
     reported_msg = message.reply_to_message
-    snippet = html.escape((reported_msg.text or reported_msg.caption or "[Медиа/файл]")[:250])
+    snippet = html.escape((reported_msg.text or reported_msg.caption or "[Медиа / вложение]")[:300])
     chat_title = html.escape(message.chat.title or "Чат")
     link = _msg_link(message.chat, reported_msg.message_id)
 
     admin_text = (
-        f"🚨 <b>Новый репорт в чате «{chat_title}»</b>\n\n"
-        f"👤 <b>Отправил:</b> {_mention(reporter)} (<code>{reporter.id}</code>)\n"
-        f"🎯 <b>Нарушитель:</b> {_mention(target)} (<code>{target.id}</code>)\n"
-        f"📝 <b>Причина:</b> {reason}\n"
+        f"🚨 <b>Новый репорт в чате «{chat_title}»</b>
+
+"
+        f"👤 <b>Отправил:</b> {_mention(reporter)} (<code>{reporter.id}</code>)
+"
+        f"🎯 <b>Нарушитель:</b> {_mention(target)} (<code>{target.id}</code>)
+"
+        f"📝 <b>Причина:</b> {reason}
+"
         f"💬 <b>Сообщение:</b> <blockquote>{snippet}</blockquote>"
     )
 
