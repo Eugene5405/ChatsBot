@@ -31,7 +31,9 @@ def has_ad(m: Message, text: str) -> bool:
     for chunk in urls:
         for mt in LINK_RE.finditer(chunk):
             handle = mt.group(1).lower()
-            if handle.startswith("+") or handle not in config.ALLOWED_LINKS:
+            # Если ссылка не в белом списке, считаем это рекламой
+            allowed = getattr(config, "ALLOWED_LINKS", set())
+            if handle.startswith("+") or handle not in allowed:
                 return True
     return False
 
@@ -95,6 +97,7 @@ async def check(m: Message, edited: bool):
     text = m.text or m.caption or ""
     enabled = {k for k in config.FILTER_LABELS if db.filter_on(m.chat.id, k)}
     kind = detect(m, text, edited, enabled)
+    
     if not kind or await is_admin_msg(m):
         return
 
@@ -108,6 +111,10 @@ async def check(m: Message, edited: bool):
         await _delete(m)
         await punish(chat, u, "реклама (п. 6)", mute_seconds=7 * 86400)
     elif kind == "mat":
+        # Проверка на купленный Swear pass
+        if db.use_item(chat, u.id, "swear_pass"):
+            await m.reply("🗣 Swear pass использован: на этот раз без наказания.")
+            return
         await _delete(m)
         repeat = time.time() - db.get_last_mat(chat, u.id) < 86400
         db.set_last_mat(chat, u.id)
