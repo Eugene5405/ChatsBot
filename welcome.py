@@ -16,8 +16,8 @@ from aiogram.types import (
 
 import config
 import db
-import rules
 from loader import bot
+from rules import get_rules
 
 router = Router()
 
@@ -42,12 +42,15 @@ async def _is_subscribed(user_id: int) -> bool:
 
 
 async def _channel_url() -> str | None:
-    if config.CHANNEL_URL:
+    if getattr(config, "CHANNEL_URL", None):
         return config.CHANNEL_URL
     if not config.CHANNEL_ID:
         return None
-    chat = await bot.get_chat(config.CHANNEL_ID)
-    return f"https://t.me{chat.username}" if chat.username else chat.invite_link
+    try:
+        chat = await bot.get_chat(config.CHANNEL_ID)
+        return f"https://t.me/{chat.username}" if chat.username else chat.invite_link
+    except Exception:
+        return None
 
 
 def _ask_sub_kb(chat_id: int, url: str | None) -> InlineKeyboardMarkup:
@@ -62,13 +65,16 @@ async def _send_welcome(chat_id: int, chat_title: str | None, user):
     settings = db.get_chat_settings(chat_id)
     if not settings.get("welcome", True):
         return
-    title = html.escape(chat_title or config.CHAT_TITLE)
+    title = html.escape(chat_title or getattr(config, "CHAT_TITLE", "Чат"))
     text = (
         f"👋 Добро пожаловать в <b>{title}</b>, {mention(user)}!\n\n"
         f"Ознакомься с правилами, чтобы не словить мут или бан:\n"
-        f"<blockquote expandable>{rules.get_rules(chat_id)}</blockquote>"
+        f"{get_rules(chat_id)}"
     )
-    await bot.send_message(chat_id, text)
+    try:
+        await bot.send_message(chat_id, text)
+    except TelegramBadRequest:
+        pass
 
 
 @router.chat_join_request()
@@ -80,7 +86,7 @@ async def on_join_request(req: ChatJoinRequest):
     try:
         await bot.send_message(
             req.from_user.id,
-            f"Чтобы вступить в <b>{html.escape(req.chat.title or config.CHAT_TITLE)}</b>, "
+            f"Чтобы вступить в <b>{html.escape(req.chat.title or config.CHAT_NAME)}</b>, "
             f"сначала подпишись на наш канал, затем нажми кнопку ниже:",
             reply_markup=_ask_sub_kb(req.chat.id, await _channel_url()),
         )
@@ -90,7 +96,7 @@ async def on_join_request(req: ChatJoinRequest):
 
 @router.callback_query(F.data.startswith("chksub:"))
 async def on_check_sub(cb: CallbackQuery):
-    chat_id = int(cb.data.split(":", 1))
+    chat_id = int(cb.data.split(":", 1)[1])
     if not await _is_subscribed(cb.from_user.id):
         await cb.answer("Подписка пока не видна. Подпишись на канал и нажми снова.", show_alert=True)
         return
@@ -117,10 +123,13 @@ async def on_chat_member_update(event: ChatMemberUpdated):
     elif old_status in _ACTIVE and new_status == ChatMemberStatus.LEFT:
         settings = db.get_chat_settings(event.chat.id)
         if settings.get("welcome", True):
-            await bot.send_message(
-                event.chat.id,
-                f"👋 {mention(user)} покинул(а) чат. Удачи и всего хорошего!",
-            )
+            try:
+                await bot.send_message(
+                    event.chat.id,
+                    f"👋 {mention(user)} покинул(а) чат. Удачи и всего хорошего!",
+                )
+            except TelegramBadRequest:
+                pass
 
 
 @router.my_chat_member()
@@ -136,9 +145,12 @@ async def on_my_chat_member(event: ChatMemberUpdated):
 
     owner_id = os.getenv("OWNER_ID") or getattr(config, "OWNER_ID", None)
 
-    # Бота добавили в чат
+    # 1. Бота ДОБАВИЛИ в чат
     if old_status in _LEFT and new_status in _ACTIVE:
+        # Записываем чат в базу, чтобы он появился в WebApp
         db.register_chat(chat.id, chat.title)
+        
+        # Пишем приветствие в сам чат
         try:
             await bot.send_message(
                 chat.id,
@@ -148,6 +160,7 @@ async def on_my_chat_member(event: ChatMemberUpdated):
         except TelegramBadRequest:
             pass
 
+        # Отправляем ЛС тому, кто добавил бота
         if actor and not actor.is_bot:
             try:
                 await bot.send_message(
@@ -158,6 +171,7 @@ async def on_my_chat_member(event: ChatMemberUpdated):
             except (TelegramForbiddenError, TelegramBadRequest):
                 pass
 
+        # Если добавил не владелец (OWNER_ID), уведомляем владельца
         if owner_id and str(owner_id) != str(getattr(actor, "id", "")):
             try:
                 await bot.send_message(
@@ -168,10 +182,13 @@ async def on_my_chat_member(event: ChatMemberUpdated):
             except (TelegramForbiddenError, TelegramBadRequest, ValueError):
                 pass
 
-    # Бота удалили из чата
+    # 2. Бота УДАЛИЛИ из чата
     elif old_status in _ACTIVE and new_status in _LEFT:
+        # Удаляем чат из базы и WebApp
         if hasattr(db, "delete_chat"):
             db.delete_chat(chat.id)
+            
+        # Отправляем ЛС тому, кто удалил бота
         if actor and not actor.is_bot:
             try:
                 await bot.send_message(
